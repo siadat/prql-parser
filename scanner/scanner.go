@@ -18,6 +18,9 @@ type Scanner struct {
 
 	nextRune       rune
 	skipWhitespace bool
+	skipComment    bool
+
+	debug bool
 }
 
 type Pos int
@@ -29,7 +32,14 @@ type Token struct {
 }
 
 func (t Token) String() string {
-	return fmt.Sprintf("%s(%q) at %d", t.Typ, t.Lit, t.Pos)
+	return fmt.Sprintf("%s(%s) at %d", t.Typ, token.LiteralStringer(t.Lit), t.Pos)
+}
+
+func (t Token) ShortString() string {
+	if t.Lit == token.AnyLit {
+		return fmt.Sprintf("%s at %d", t.Typ, t.Pos)
+	}
+	return fmt.Sprintf("%s(%s) at %d", t.Typ, token.LiteralStringer(t.Lit), t.Pos)
 }
 
 func NewScanner(src io.Reader) *Scanner {
@@ -46,8 +56,16 @@ func NewScanner(src io.Reader) *Scanner {
 
 const EndOfInput = 0
 
+func (p *Scanner) SetDebug(debug bool) {
+	p.debug = debug
+}
+
 func (s *Scanner) SetSkipWhitespace(v bool) {
 	s.skipWhitespace = true
+}
+
+func (s *Scanner) SetSkipComment(v bool) {
+	s.skipComment = true
 }
 
 func (s *Scanner) readRune() {
@@ -101,7 +119,9 @@ func (s *Scanner) CurrToken() Token {
 }
 
 func (s *Scanner) nextToken() (Token, error) {
-	// s.PrintCursor("debug")
+	if s.debug {
+		s.PrintCursor("debug")
+	}
 	var start = s.position
 
 	switch s.currRune {
@@ -156,10 +176,10 @@ func (s *Scanner) nextToken() (Token, error) {
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		return s.readNumber()
 	case '-':
-		// this can be 'a - b' or '-12' or '->'
-		if isNumerical(s.nextRune) {
-			return s.readNumber()
-		}
+		// // this can be 'a - b' or '-12' or '->'
+		// if isNumerical(s.nextRune) {
+		// 	return s.readNumber()
+		// }
 
 		if s.nextRune == '>' {
 			var tok = Token{token.ARROW, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
@@ -172,14 +192,14 @@ func (s *Scanner) nextToken() (Token, error) {
 			return tok, nil
 		}
 	case '+':
-		// this can be 'a + b' or '+12' ('+' followed immediately by a number)
-		if isNumerical(s.nextRune) {
-			return s.readNumber()
-		} else {
-			var tok = Token{token.ADD, fmt.Sprintf("%c", s.currRune), Pos(start)}
-			s.readRune()
-			return tok, nil
-		}
+		// // this can be 'a + b' or '+12' ('+' followed immediately by a number)
+		// if isNumerical(s.nextRune) {
+		// 	return s.readNumber()
+		// } else {
+		var tok = Token{token.ADD, fmt.Sprintf("%c", s.currRune), Pos(start)}
+		s.readRune()
+		return tok, nil
+		// }
 	case '=':
 		// this can be '=' or '=='
 		if s.nextRune == '=' {
@@ -252,7 +272,15 @@ func (s *Scanner) nextToken() (Token, error) {
 	case '@':
 		return s.readDateOrTimeOrDatetime()
 	case '#':
-		return s.readComment()
+		if s.skipComment {
+			var ret, err = s.readComment()
+			if err != nil {
+				return ret, err
+			}
+			return s.nextToken()
+		} else {
+			return s.readComment()
+		}
 	case '"':
 		return s.readString('"')
 	case '\'':
@@ -318,8 +346,14 @@ func (s *Scanner) readString(ender rune) (Token, error) {
 
 func (s *Scanner) readComment() (Token, error) {
 	var position = s.position
-	for s.currRune != '\n' {
-		s.readRune()
+For:
+	for {
+		switch s.currRune {
+		case '\n', EndOfInput:
+			break For
+		default:
+			s.readRune()
+		}
 	}
 	return Token{
 		token.COMMENT,
@@ -483,10 +517,26 @@ func (s *Scanner) PrintCursor(layout string, args ...interface{}) {
 	}
 
 	var prefix = fmt.Sprintf(layout, args...)
-	b.WriteString(fmt.Sprintf("%s  %s\n", prefix, lines[line]))
-	b.WriteString(fmt.Sprintf("%s  %s▲ [%d]=%s token=%s\n", prefix, strings.Repeat(" ", column), s.position, ch, s.currToken))
+	var linestr = strings.ReplaceAll(lines[line], "\t", "␣")
+	if line == len(lines)-1 {
+		linestr = linestr + "·"
+	} else {
+		linestr = linestr + "⏎"
+	}
+	b.WriteString(fmt.Sprintf("%s %s\n", prefix, linestr))
+	// b.WriteString(fmt.Sprintf("%s %s│\n", prefix, strings.Repeat(" ", column)))
+	b.WriteString(fmt.Sprintf("%s %s╰─src[%d]=%s currToken=%s\n", prefix, strings.Repeat(" ", column), s.position, ch, s.currToken))
+	// b.WriteString(fmt.Sprintf("%s %s  currToken=%s\n", prefix, strings.Repeat(" ", column), s.currToken))
+	if s.position == 0 {
+		var header = fmt.Sprintf("Parsing %q", string(s.src))
+		if len(header) > 80 {
+			header = header[:80] + "..."
+		}
+		fmt.Printf("%s %s\n", strings.Repeat(" ", len(prefix)), strings.Repeat("=", len(header)))
+		fmt.Printf("%s %s\n", strings.Repeat(" ", len(prefix)), header)
+		fmt.Printf("%s %s\n", strings.Repeat(" ", len(prefix)), strings.Repeat("=", len(header)))
+	}
 	fmt.Print(b.String())
-	// fmt.Println("[debug] ", prefix, string(s.src), len(s.src), fmt.Sprintf("[%4d]=%c", s.position, s.currRune))
 }
 
 func (s *Scanner) getCurrPosition() (int, int) {

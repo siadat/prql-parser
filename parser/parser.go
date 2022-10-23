@@ -3,6 +3,10 @@ package parser
 import (
 	"fmt"
 	"io"
+	"runtime/debug"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/siadat/prql-parser/ast"
 	"github.com/siadat/prql-parser/scanner"
@@ -13,199 +17,410 @@ type Parser struct {
 	src     io.Reader
 	root    *ast.Root
 	scanner *scanner.Scanner
+	debug   bool
+}
+
+func (p *Parser) SetDebug(debug bool) {
+	p.debug = debug
+	if p.scanner != nil {
+		p.scanner.SetDebug(debug)
+	}
 }
 
 func NewParser() *Parser {
 	return &Parser{}
 }
 
-func (p *Parser) Parse(src io.Reader) (*ast.Root, error) {
+func (p *Parser) init(src io.Reader) error {
 	p.scanner = scanner.NewScanner(src)
 	p.scanner.SetSkipWhitespace(true)
-	var nodes, err = p.parseTransforms()
-	p.root = &ast.Root{
-		Transforms: nodes,
-	}
+	p.scanner.SetSkipComment(true)
+	p.scanner.SetDebug(p.debug)
 
-	return p.root, err
+	var _, err1 = p.scanner.NextToken()
+	if err1 != nil {
+		return err1
+	}
+	return nil
 }
 
-func (p *Parser) parseTransforms() ([]ast.Node, error) {
+func (p *Parser) Parse(src io.Reader) (retRoot *ast.Root, retErr error) {
+	if err := p.init(src); err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		var err = recover()
+		if err, ok := err.(ParseError); ok {
+			retErr = err
+		}
+	}()
+
+	retRoot = &ast.Root{Transforms: p.parseTransforms()}
+	return
+}
+
+func (p *Parser) ParseExpr(src io.Reader) (retRoot ast.Expr, retErr error) {
+	if err := p.init(src); err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		var err = recover()
+		if err, ok := err.(ParseError); ok {
+			retErr = err
+		}
+	}()
+	retRoot = p.parseExpr(nil, token.LowestPrecedence)
+	return
+}
+
+func (p *Parser) parseTransforms() []ast.Node {
 	var nodes []ast.Node
 	for {
-		var node, err = p.parseTransform(0)
-		if err != nil {
-			return nil, err
+		var node = p.parseTransform(0)
+		if node != nil {
+			nodes = append(nodes, node)
 		}
-		nodes = append(nodes, node)
 		if p.scanner.Eof() {
-			return nodes, nil
+			return nodes
 		}
 	}
 }
 
-func (p *Parser) parseTransform(indent int) (ast.Node, error) {
-	var t, err = p.scanner.NextToken()
-	if err != nil {
-		return nil, err
-	}
-	if t.Typ != token.IDENTIFIER {
-		return nil, fmt.Errorf("expected identifier, got %s", t)
-	}
-
-	switch t.Lit {
-	case "from":
+func (p *Parser) parseTransform(indent int) ast.Node {
+	var t = p.scanner.CurrToken()
+	if t.Lit == "from" {
 		return p.parseFromTransform()
-	case "select":
+	} else if t.Lit == "select" {
 		return p.parseSelectTransform()
-	default:
-		return nil, fmt.Errorf("unexpected identifier %s", t)
-	}
-}
-
-func expectType(t scanner.Token, typ token.Token) error {
-	if t.Typ != typ {
-		return fmt.Errorf("expected %s, got %s", typ, t)
+	} else if t.Lit == "derive" {
+		return p.parseDeriveTransform()
+	} else if t.Typ == token.NEWLINE {
+		p.proceed()
+	} else if t.Typ == token.EOF {
+		return nil
+	} else {
+		p.checkErr(fmt.Errorf("failed to parse a transform, unexpected %s", t))
 	}
 	return nil
 }
 
-func expectExact(t scanner.Token, typ token.Token, lit string) error {
-	if t.Typ != typ {
-		return fmt.Errorf("expected %s, got %s", typ, t)
+func (p *Parser) parseFromTransform() ast.Node {
+	// [x] from table1
+	// [x] from e1 = table1
+	var ident1 scanner.Token
+	var ident2 scanner.Token
+
+	p.expect(token.IDENTIFIER, "from")
+	p.proceed()
+
+	ident1 = p.expectType(token.IDENTIFIER)
+	p.proceed()
+
+	switch t := p.scanner.CurrToken(); t.Typ {
+	case token.ASSIGN:
+		p.proceed()
+		ident2 = p.expectType(token.IDENTIFIER)
+		p.proceed()
+	case token.NEWLINE:
+		p.proceed()
+	case token.EOF:
 	}
-	if lit == "*" {
-		// any lit
+
+	if ident1 != (scanner.Token{}) && ident2 != (scanner.Token{}) {
+		return ast.FromTransform{
+			Alias: &ast.Ident{Name: ident1.Lit, Pos: ident1.Pos},
+			Table: ast.Ident{Name: ident2.Lit, Pos: ident2.Pos},
+		}
+	}
+	if ident1 != (scanner.Token{}) {
+		return ast.FromTransform{
+			Alias: nil,
+			Table: ast.Ident{Name: ident1.Lit, Pos: ident1.Pos},
+		}
+	}
+	p.checkErr(fmt.Errorf("parse failed"))
+	return nil
+}
+
+func (p *Parser) parsePrimaryExpr() ast.Expr {
+	switch t := p.scanner.CurrToken(); t.Typ {
+	case token.STRING:
+		p.proceed()
+
+		return ast.String{Value: t.Lit}
+	case token.IDENTIFIER:
+		p.proceed()
+
+		return ast.Column{
+			Name: ast.Ident{Name: t.Lit, Pos: t.Pos},
+		}
+	case token.DATE:
+		p.proceed()
+
+		var t, err = time.Parse("@2006-01-02", t.Lit)
+		p.checkErr(err)
+
+		return ast.Date{
+			Year:  t.Year(),
+			Month: int(t.Month()),
+			Day:   t.Day(),
+		}
+	case token.TIME:
+		p.proceed()
+
+		var t, err = time.Parse("@15:04:05", t.Lit)
+		p.checkErr(err)
+
+		return ast.Time{
+			Hour:   t.Hour(),
+			Minute: t.Minute(),
+			Second: t.Second(),
+		}
+	case token.TIMESTAMP:
+		p.proceed()
+		var t, err = time.Parse("@2006-01-02T15:04:05", t.Lit)
+		p.checkErr(err)
+
+		return ast.Timestamp{
+			Year:   t.Year(),
+			Month:  int(t.Month()),
+			Day:    t.Day(),
+			Hour:   t.Hour(),
+			Minute: t.Minute(),
+			Second: t.Second(),
+		}
+	case token.INTERVAL:
+		p.proceed()
+		for _, unit := range token.Units {
+			var idx = strings.Index(t.Lit, unit)
+			if idx != -1 {
+				var d, err = strconv.ParseInt(t.Lit[:idx], 10, 64)
+				p.checkErr(err)
+				return ast.Interval{Count: int(d), Unit: unit}
+			}
+		}
+		p.checkErr(fmt.Errorf("bad interval format %s", t))
+		return nil
+	case token.ADD:
+		// signed positive number, e.g. +1
+		p.proceed()
+		return p.parsePrimaryExpr()
+	case token.SUB:
+		// signed negative number, e.g. -1
+		p.proceed()
+
+		switch t := p.scanner.CurrToken(); t.Typ {
+		case token.INTEGER, token.FLOAT:
+			// ok
+		default:
+			p.checkErr(fmt.Errorf("expected integer or float, got %s", t))
+		}
+
+		var expr = p.parsePrimaryExpr()
+		switch e := expr.(type) {
+		case ast.Integer:
+			expr = ast.Integer{Value: -e.Value}
+		case ast.Float:
+			expr = ast.Float{Value: -e.Value}
+		default:
+			p.checkErr(fmt.Errorf("expected integer or float, got %T", expr))
+		}
+		return expr
+	case token.INTEGER:
+		p.proceed()
+
+		var d, err = strconv.ParseInt(t.Lit, 10, 64)
+		p.checkErr(err)
+		return ast.Integer{Value: int(d)}
+	case token.FLOAT:
+		p.proceed()
+
+		var f, err = strconv.ParseFloat(t.Lit, 64)
+		p.checkErr(err)
+		return ast.Float{Value: f}
+	case token.LPAREN:
+		return p.parseParenExpr()
+	default:
+		p.checkErr(fmt.Errorf("failed to parse primary expression, got %s", t))
 		return nil
 	}
-	if t.Lit != lit {
-		return fmt.Errorf("expected %s with lit %q, got %s", typ, lit, t)
-	}
-	return nil
 }
 
-func (p *Parser) parseFromTransform() (ast.Node, error) {
-	// from table1
-	// from e1 = table1
-	var t1 = p.scanner.CurrToken()
-	if err := expectExact(t1, token.IDENTIFIER, "from"); err != nil {
-		return nil, err
-	}
+func (p *Parser) parseParenExpr() ast.Expr {
+	p.expect(token.LPAREN, "(")
+	p.proceed()
+	var expr = p.parseExpr(nil, token.LowestPrecedence)
 
-	var t2, err2 = p.scanner.NextToken()
-	if err2 != nil {
-		return nil, err2
-	}
-	if err := expectType(t1, token.IDENTIFIER); err != nil {
-		return nil, err
-	}
+	p.expect(token.RPAREN, ")")
+	p.proceed()
 
-	var t3, err3 = p.scanner.NextToken()
-	if err3 != nil {
-		return nil, err3
-	}
-	if t3.Typ == token.NEWLINE || t3.Typ == token.EOF {
-		return ast.FromTransform{
-			Table: ast.Ident{Name: t2.Lit, Pos: t2.Pos},
-		}, nil
-	}
-
-	if err := expectExact(t3, token.ASSIGN, "="); err != nil {
-		return nil, err
-	}
-
-	var t4, err4 = p.scanner.NextToken()
-	if err4 != nil {
-		return nil, err2
-	}
-	if err := expectType(t4, token.IDENTIFIER); err != nil {
-		return nil, err
-	}
-
-	// move to next one
-	var _, err5 = p.scanner.NextToken()
-	if err5 != nil {
-		return nil, err5
-	}
-
-	return ast.FromTransform{
-		Alias: &ast.Ident{Name: t2.Lit, Pos: t2.Pos},
-		Table: ast.Ident{Name: t4.Lit, Pos: t4.Pos},
-	}, nil
+	return ast.ParenExpr{X: expr}
 }
 
-func (p *Parser) parseExpr() (ast.Expr, error) {
+func (p *Parser) checkErr(err error) {
+	if err != nil {
+		if p.debug {
+			debug.PrintStack()
+		}
+		panic(ParseError{err})
+	}
+}
+
+func (p *Parser) parseExpr(lhs ast.Expr, minPrec token.Precedence) ast.Expr {
+	if lhs == nil {
+		lhs = p.parsePrimaryExpr()
+	}
+
+	for {
+		var tk = p.scanner.CurrToken()
+		var prec, isOp = token.Precedences[tk.Typ]
+		if !isOp {
+			return lhs
+		}
+		if tk.Typ == token.EOF {
+			return lhs
+		}
+		if prec < minPrec {
+			return lhs
+		}
+
+		p.proceed()
+
+		var rhs = p.parseExpr(nil, prec)
+		lhs = ast.BinaryExpr{
+			X:  lhs,
+			Y:  rhs,
+			Op: tk.Typ,
+		}
+	}
+}
+
+type ParseError struct {
+	err error
+}
+
+func (e ParseError) Error() string {
+	return e.err.Error()
+}
+
+func (p *Parser) proceed() scanner.Token {
+	var t, err = p.scanner.NextToken()
+	p.checkErr(err)
+	return t
+}
+
+// parseAssignExpr returns an expr that might be an AssignExpr
+func (p *Parser) parseAssignExpr() ast.Expr {
+	switch firstToken := p.scanner.CurrToken(); firstToken.Typ {
+	case token.IDENTIFIER:
+		var firstIdent = ast.Ident{Name: firstToken.Lit, Pos: firstToken.Pos}
+		p.proceed()
+		if t := p.scanner.CurrToken(); t.Typ == token.ASSIGN && t.Lit == "=" {
+			p.proceed()
+			return ast.AssignExpr{
+				Name: firstIdent.Name,
+				Expr: p.parseExpr(nil, token.LowestPrecedence),
+			}
+		} else {
+			return p.parseExpr(ast.Column{Name: firstIdent}, token.LowestPrecedence)
+		}
+
+	default:
+		return p.parseExpr(nil, token.LowestPrecedence)
+	}
+}
+
+func (p *Parser) skipOptionalNewlines() error {
+	for {
+		var t = p.scanner.CurrToken()
+		if t.Typ == token.NEWLINE {
+			p.proceed()
+		} else {
+			return nil
+		}
+	}
+}
+
+func (p *Parser) expect(typ token.Token, lit string) {
 	var t = p.scanner.CurrToken()
-	if err := expectType(t, token.IDENTIFIER); err != nil {
-		return nil, err
+	if t.Typ == typ && t.Lit == lit {
+		return
 	}
-	return ast.Column{
-		Name: ast.Ident{Name: t.Lit, Pos: t.Pos},
-	}, nil
+	p.checkErr(fmt.Errorf("expected %q, got %s", lit, t))
 }
 
-func (p *Parser) parseList() (ast.List, error) {
-	var list = ast.List{
+func (p *Parser) expectType(typ token.Token) scanner.Token {
+	var t = p.scanner.CurrToken()
+	if t.Typ == typ {
+		return t
+	}
+	p.checkErr(fmt.Errorf("expected %s, got %s", typ, t))
+	return scanner.Token{}
+}
+
+func (p *Parser) parseExprList() ast.ExprList {
+	var list ast.ExprList
+
+	switch t1 := p.scanner.CurrToken(); t1.Typ {
+	case token.LBRACK:
+		p.proceed()
+		for {
+			p.checkErr(p.skipOptionalNewlines())
+			switch tk := p.scanner.CurrToken(); tk.Typ {
+			case token.RBRACK:
+				p.proceed()
+				return list
+			case token.EOF:
+				return list
+			default:
+				var assign = p.parseAssignExpr()
+				list.Items = append(list.Items, assign)
+
+				switch tk := p.scanner.CurrToken(); tk.Typ {
+				case token.COMMA:
+					p.proceed()
+				case token.NEWLINE:
+					p.checkErr(p.skipOptionalNewlines())
+				case token.RBRACK:
+					p.proceed()
+				default:
+					p.checkErr(fmt.Errorf("unexpected token %s", tk))
+				}
+			}
+		}
+	default:
+		var assign = p.parseAssignExpr()
+		list.Items = append(list.Items, assign)
+		return list
+	}
+}
+
+func (p *Parser) parseDeriveTransform() ast.Node {
+	var list = ast.ExprList{
 		Items: nil,
 	}
 
-	var t1 = p.scanner.CurrToken()
-	if err := expectExact(t1, token.LBRACK, "["); err != nil {
-		return list, err
-	}
-	for {
-		var t2 = p.scanner.CurrToken()
-		if t2.Typ == token.RBRACK && t2.Lit == "]" {
-			break
-		}
+	p.expect(token.IDENTIFIER, "derive")
+	p.proceed()
 
-		var expr, err = p.parseExpr()
-		if err != nil {
-			return list, err
-		}
-		list.Items = append(list.Items, expr)
-	}
-	if err := expectExact(t1, token.RBRACK, "]"); err != nil {
-		return list, err
-	}
-	return list, nil
+	var items = p.parseExprList()
+	list.Items = items.Items
+
+	return ast.DeriveTransform{List: list}
 }
 
-func (p *Parser) parseSelectTransform() (ast.Node, error) {
-	// select column1
-	// select [column1, column2]
-	// select [column1 = f"{column1} {column2}", column2]
-	// select column1 = f"{column1} {column2}"
-	var t1 = p.scanner.CurrToken()
-	if err := expectExact(t1, token.IDENTIFIER, "select"); err != nil {
-		return nil, err
+func (p *Parser) parseSelectTransform() ast.Node {
+	var list = ast.ExprList{
+		Items: nil,
 	}
 
-	var t2, err2 = p.scanner.NextToken()
-	if err2 != nil {
-		return nil, err2
-	}
+	p.expect(token.IDENTIFIER, "select")
+	p.proceed()
 
-	var list ast.List
-	if t2.Typ == token.LBRACK {
-		var err error
-		list, err = p.parseList()
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		var expr, err = p.parseExpr()
-		if err != nil {
-			return nil, err
-		}
-		list.Items = append(list.Items, expr)
-	}
+	var items = p.parseExprList()
+	list.Items = items.Items
 
-	// move to next one
-	var _, err3 = p.scanner.NextToken()
-	if err3 != nil {
-		return nil, err3
-	}
-
-	return ast.SelectTransform{List: list}, nil
+	return ast.SelectTransform{List: list}
 }

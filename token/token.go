@@ -1,6 +1,9 @@
 package token
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 type Token int
 
@@ -63,6 +66,11 @@ const (
 	keyword_end
 )
 
+const (
+	AnyTyp Token  = -1
+	AnyLit string = ""
+)
+
 var tokens = [...]string{
 	ILLEGAL:    "ILLEGAL",
 	EOF:        "EOF",
@@ -114,8 +122,33 @@ var tokens = [...]string{
 	NULL:  "NULL",
 }
 
+var Units = [...]string{
+	"microseconds",
+	"milliseconds",
+	"seconds",
+	"minutes",
+	"hours",
+	"days",
+	"weeks",
+	"months",
+	"years",
+}
+
+type Precedence int
+
+var LowestPrecedence Precedence = 0
+var Precedences = map[Token]Precedence{
+	ADD: 1,
+	SUB: 1,
+	MUL: 2,
+	QUO: 2,
+}
+
 func (tok Token) String() string {
-	s := ""
+	if tok == AnyTyp {
+		return ":AnyTyp:"
+	}
+	var s = ""
 	if 0 <= tok && tok < Token(len(tokens)) {
 		s = tokens[tok]
 	}
@@ -123,4 +156,13 @@ func (tok Token) String() string {
 		s = "token(" + strconv.Itoa(int(tok)) + ")"
 	}
 	return s
+}
+
+type LiteralStringer string
+
+func (lit LiteralStringer) String() string {
+	if string(lit) == AnyLit {
+		return ":AnyLit:"
+	}
+	return fmt.Sprintf("%q", string(lit))
 }
