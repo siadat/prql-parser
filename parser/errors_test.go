@@ -20,6 +20,14 @@ func TestErrors(tt *testing.T) {
 			want: `failed to parse a transform, unexpected COMMA(",") at 11`,
 		},
 		{
+			src:  `select 1 + ++1`, // extra plus sign
+			want: `expected integer or float, got ADD("+") at 12`,
+		},
+		{
+			src:  `select 1 + --1`, // extra minus sign
+			want: `expected integer or float, got SUB("-") at 12`,
+		},
+		{
 			src: `
 			from table1
 			select [1, a b]

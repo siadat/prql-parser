@@ -29,6 +29,11 @@ type BinaryExpr struct {
 	Op token.Token
 }
 
+type UnaryExpr struct {
+	X  Expr
+	Op token.Token
+}
+
 type ParenExpr struct {
 	X Expr
 }
@@ -102,6 +107,7 @@ func (Interval) node()        {}
 func (String) node()          {}
 func (Float) node()           {}
 func (BinaryExpr) node()      {}
+func (UnaryExpr) node()       {}
 func (ParenExpr) node()       {}
 func (AssignExpr) node()      {}
 
@@ -114,5 +120,6 @@ func (Interval) expr()   {}
 func (String) expr()     {}
 func (Float) expr()      {}
 func (BinaryExpr) expr() {}
+func (UnaryExpr) expr()  {}
 func (ParenExpr) expr()  {}
 func (AssignExpr) expr() {}

@@ -176,30 +176,22 @@ func (s *Scanner) nextToken() (Token, error) {
 	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		return s.readNumber()
 	case '-':
-		// // this can be 'a - b' or '-12' or '->'
-		// if isNumerical(s.nextRune) {
-		// 	return s.readNumber()
-		// }
-
 		if s.nextRune == '>' {
 			var tok = Token{token.ARROW, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
 			s.readRune()
 			s.readRune() // 2nd time for '=='
 			return tok, nil
 		} else {
+			// either a sign (e.g. '-1', or a sub e.g. '1 - -2')
 			var tok = Token{token.SUB, fmt.Sprintf("%c", s.currRune), Pos(start)}
 			s.readRune()
 			return tok, nil
 		}
 	case '+':
-		// // this can be 'a + b' or '+12' ('+' followed immediately by a number)
-		// if isNumerical(s.nextRune) {
-		// 	return s.readNumber()
-		// } else {
+		// either a sign (e.g. '+1', or a sum e.g. '1 + +2')
 		var tok = Token{token.ADD, fmt.Sprintf("%c", s.currRune), Pos(start)}
 		s.readRune()
 		return tok, nil
-		// }
 	case '=':
 		// this can be '=' or '=='
 		if s.nextRune == '=' {

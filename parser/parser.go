@@ -20,11 +20,18 @@ type Parser struct {
 	debug   bool
 }
 
-func (p *Parser) SetDebug(debug bool) {
-	p.debug = debug
-	if p.scanner != nil {
-		p.scanner.SetDebug(debug)
-	}
+type ParseError struct {
+	err error
+}
+
+func (e ParseError) Error() string {
+	return e.err.Error()
+}
+
+func (p *Parser) proceed() scanner.Token {
+	var t, err = p.scanner.NextToken()
+	p.checkErr(err)
+	return t
 }
 
 func NewParser() *Parser {
@@ -37,11 +44,15 @@ func (p *Parser) init(src io.Reader) error {
 	p.scanner.SetSkipComment(true)
 	p.scanner.SetDebug(p.debug)
 
-	var _, err1 = p.scanner.NextToken()
-	if err1 != nil {
-		return err1
+	var _, err = p.scanner.NextToken()
+	return err
+}
+
+func (p *Parser) SetDebug(debug bool) {
+	p.debug = debug
+	if p.scanner != nil {
+		p.scanner.SetDebug(debug)
 	}
-	return nil
 }
 
 func (p *Parser) Parse(src io.Reader) (retRoot *ast.Root, retErr error) {
@@ -60,7 +71,7 @@ func (p *Parser) Parse(src io.Reader) (retRoot *ast.Root, retErr error) {
 	return
 }
 
-func (p *Parser) ParseExpr(src io.Reader) (retRoot ast.Expr, retErr error) {
+func (p *Parser) ParseExpr(src io.Reader) (retExpr ast.Expr, retErr error) {
 	if err := p.init(src); err != nil {
 		return nil, err
 	}
@@ -71,7 +82,7 @@ func (p *Parser) ParseExpr(src io.Reader) (retRoot ast.Expr, retErr error) {
 			retErr = err
 		}
 	}()
-	retRoot = p.parseExpr(nil, token.LowestPrecedence)
+	retExpr = p.parseExpr(nil, token.LowestPrecedence)
 	return
 }
 
@@ -98,12 +109,12 @@ func (p *Parser) parseTransform(indent int) ast.Node {
 		return p.parseDeriveTransform()
 	} else if t.Typ == token.NEWLINE {
 		p.proceed()
+		return nil
 	} else if t.Typ == token.EOF {
 		return nil
 	} else {
-		p.checkErr(fmt.Errorf("failed to parse a transform, unexpected %s", t))
+		panic(ParseError{fmt.Errorf("failed to parse a transform, unexpected %s", t)})
 	}
-	return nil
 }
 
 func (p *Parser) parseFromTransform() ast.Node {
@@ -140,8 +151,7 @@ func (p *Parser) parseFromTransform() ast.Node {
 			Table: ast.Ident{Name: ident1.Lit, Pos: ident1.Pos},
 		}
 	}
-	p.checkErr(fmt.Errorf("parse failed"))
-	return nil
+	panic(ParseError{fmt.Errorf("parse failed")})
 }
 
 func (p *Parser) parsePrimaryExpr() ast.Expr {
@@ -201,33 +211,24 @@ func (p *Parser) parsePrimaryExpr() ast.Expr {
 				return ast.Interval{Count: int(d), Unit: unit}
 			}
 		}
-		p.checkErr(fmt.Errorf("bad interval format %s", t))
-		return nil
-	case token.ADD:
-		// signed positive number, e.g. +1
-		p.proceed()
-		return p.parsePrimaryExpr()
-	case token.SUB:
-		// signed negative number, e.g. -1
+		panic(ParseError{fmt.Errorf("bad interval format %s", t)})
+	case token.ADD, token.SUB:
+		var op = t.Typ
+		// signed expression, e.g. -1 or +value
 		p.proceed()
 
 		switch t := p.scanner.CurrToken(); t.Typ {
-		case token.INTEGER, token.FLOAT:
-			// ok
+		case token.INTEGER,
+			token.FLOAT,
+			token.IDENTIFIER,
+			token.LPAREN:
+			return ast.UnaryExpr{
+				X:  p.parsePrimaryExpr(),
+				Op: op,
+			}
 		default:
-			p.checkErr(fmt.Errorf("expected integer or float, got %s", t))
+			panic(ParseError{fmt.Errorf("expected integer or float, got %s", t)})
 		}
-
-		var expr = p.parsePrimaryExpr()
-		switch e := expr.(type) {
-		case ast.Integer:
-			expr = ast.Integer{Value: -e.Value}
-		case ast.Float:
-			expr = ast.Float{Value: -e.Value}
-		default:
-			p.checkErr(fmt.Errorf("expected integer or float, got %T", expr))
-		}
-		return expr
 	case token.INTEGER:
 		p.proceed()
 
@@ -243,8 +244,7 @@ func (p *Parser) parsePrimaryExpr() ast.Expr {
 	case token.LPAREN:
 		return p.parseParenExpr()
 	default:
-		p.checkErr(fmt.Errorf("failed to parse primary expression, got %s", t))
-		return nil
+		panic(ParseError{fmt.Errorf("failed to parse primary expression, got %s", t)})
 	}
 }
 
@@ -297,20 +297,6 @@ func (p *Parser) parseExpr(lhs ast.Expr, minPrec token.Precedence) ast.Expr {
 	}
 }
 
-type ParseError struct {
-	err error
-}
-
-func (e ParseError) Error() string {
-	return e.err.Error()
-}
-
-func (p *Parser) proceed() scanner.Token {
-	var t, err = p.scanner.NextToken()
-	p.checkErr(err)
-	return t
-}
-
 // parseAssignExpr returns an expr that might be an AssignExpr
 func (p *Parser) parseAssignExpr() ast.Expr {
 	switch firstToken := p.scanner.CurrToken(); firstToken.Typ {
@@ -348,7 +334,7 @@ func (p *Parser) expect(typ token.Token, lit string) {
 	if t.Typ == typ && t.Lit == lit {
 		return
 	}
-	p.checkErr(fmt.Errorf("expected %q, got %s", lit, t))
+	panic(ParseError{fmt.Errorf("expected %q, got %s", lit, t)})
 }
 
 func (p *Parser) expectType(typ token.Token) scanner.Token {
@@ -356,8 +342,7 @@ func (p *Parser) expectType(typ token.Token) scanner.Token {
 	if t.Typ == typ {
 		return t
 	}
-	p.checkErr(fmt.Errorf("expected %s, got %s", typ, t))
-	return scanner.Token{}
+	panic(ParseError{fmt.Errorf("expected %s, got %s", typ, t)})
 }
 
 func (p *Parser) parseExprList() ast.ExprList {
@@ -386,7 +371,7 @@ func (p *Parser) parseExprList() ast.ExprList {
 				case token.RBRACK:
 					p.proceed()
 				default:
-					p.checkErr(fmt.Errorf("unexpected token %s", tk))
+					panic(ParseError{fmt.Errorf("unexpected token %s", tk)})
 				}
 			}
 		}

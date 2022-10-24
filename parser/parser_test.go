@@ -150,8 +150,8 @@ func TestParser(tt *testing.T) {
 		{
 			src: `
 			select [
-			  1, 1 * 2, # 2 expressions in one line
-			  +1 + -2.1, # signed numbers
+			  1, 1+2, 1 * 2, # 2 expressions in one line
+			  +3 + -2.1, # signed numbers
 			  expr1 = 1 + 2 * 3 * 4 + 5 # == 1 + ((2 * (3 * 4)) + 5),
 			  expr2 = 1 * 2 + 3 + 4 * 5 # == (1 * 2) + (3 + (4 * 5)),
 			]
@@ -165,11 +165,16 @@ func TestParser(tt *testing.T) {
 								ast.BinaryExpr{
 									X:  ast.Integer{Value: 1},
 									Y:  ast.Integer{Value: 2},
+									Op: token.ADD,
+								},
+								ast.BinaryExpr{
+									X:  ast.Integer{Value: 1},
+									Y:  ast.Integer{Value: 2},
 									Op: token.MUL,
 								},
 								ast.BinaryExpr{
-									X:  ast.Integer{Value: +1},
-									Y:  ast.Float{Value: -2.1},
+									X:  ast.UnaryExpr{X: ast.Integer{Value: 3}, Op: token.ADD},
+									Y:  ast.UnaryExpr{X: ast.Float{Value: 2.1}, Op: token.SUB},
 									Op: token.ADD,
 								},
 								ast.AssignExpr{
