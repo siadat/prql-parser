@@ -179,7 +179,7 @@ func (s *Scanner) nextToken() (Token, error) {
 		if s.nextRune == '>' {
 			var tok = Token{token.ARROW, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
 			s.readRune()
-			s.readRune() // 2nd time for '=='
+			s.readRune()
 			return tok, nil
 		} else {
 			// either a sign (e.g. '-1', or a sub e.g. '1 - -2')
@@ -197,7 +197,7 @@ func (s *Scanner) nextToken() (Token, error) {
 		if s.nextRune == '=' {
 			var tok = Token{token.EQL, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
 			s.readRune()
-			s.readRune() // 2nd time for '=='
+			s.readRune()
 			return tok, nil
 		} else {
 			var tok = Token{token.ASSIGN, fmt.Sprintf("%c", s.currRune), Pos(start)}
@@ -209,7 +209,7 @@ func (s *Scanner) nextToken() (Token, error) {
 		if s.nextRune == '=' {
 			var tok = Token{token.GEQ, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
 			s.readRune()
-			s.readRune() // 2nd time for '=='
+			s.readRune()
 			return tok, nil
 		} else {
 			var tok = Token{token.GTR, fmt.Sprintf("%c", s.currRune), Pos(start)}
@@ -221,7 +221,7 @@ func (s *Scanner) nextToken() (Token, error) {
 		if s.nextRune == '=' {
 			var tok = Token{token.LEQ, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
 			s.readRune()
-			s.readRune() // 2nd time for '=='
+			s.readRune()
 			return tok, nil
 		} else {
 			var tok = Token{token.LSS, fmt.Sprintf("%c", s.currRune), Pos(start)}
@@ -229,11 +229,11 @@ func (s *Scanner) nextToken() (Token, error) {
 			return tok, nil
 		}
 	case '!':
-		// this can be '<' or '<='
+		// this can be '!' or '!='
 		if s.nextRune == '=' {
 			var tok = Token{token.NEQ, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
 			s.readRune()
-			s.readRune() // 2nd time for '=='
+			s.readRune()
 			return tok, nil
 		} else {
 			var tok = Token{token.NOT, fmt.Sprintf("%c", s.currRune), Pos(start)}
@@ -241,11 +241,11 @@ func (s *Scanner) nextToken() (Token, error) {
 			return tok, nil
 		}
 	case '?':
-		// this can be '??'
+		// this should only be '??'
 		if s.nextRune == '?' {
 			var tok = Token{token.COALESCE, fmt.Sprintf("%c%c", s.currRune, s.nextRune), Pos(start)}
 			s.readRune()
-			s.readRune() // 2nd time for '=='
+			s.readRune()
 			return tok, nil
 		} else {
 			return Token{
@@ -255,7 +255,7 @@ func (s *Scanner) nextToken() (Token, error) {
 			}, fmt.Errorf("unexpected character %c", s.currRune)
 		}
 	case 'f', 's':
-		// this can be '<' or '<='
+		// this can be 'f"..."' | 's"..."' | an identifier that begins with f or s
 		if s.nextRune == '"' {
 			return s.readString('"')
 		} else {
